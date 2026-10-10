@@ -73,6 +73,28 @@ render_website <- function(
 # directories. CI checkouts carry a full-history .git (potentially many
 # GB); copying it into the temp dir and unlinking it again afterwards
 # dominated render time with silent disk I/O.
+# Cache quarto_inspect results. add_links() runs once per rendered
+# document, but the inspection only depends on (project, language,
+# profile) — not on the document. Without the cache, rendering a site
+# spawns one heavyweight quarto CLI process per page (hundreds of
+# spawns, which dominated the post-render phase).
+.inspect_cache <- new.env(parent = emptyenv())
+
+quarto_inspect_cached <- function(project_dir, language_code, profile) {
+  key <- paste(language_code, profile, sep = "\r")
+  if (!exists(key, envir = .inspect_cache)) {
+    assign(
+      key,
+      quarto::quarto_inspect(
+        input = project_dir,
+        profile = c(language_code, profile)
+      ),
+      envir = .inspect_cache
+    )
+  }
+  get(key, envir = .inspect_cache)
+}
+
 copy_project <- function(path, temporary_directory) {
   entries <- fs::dir_ls(path, all = TRUE)
   entries <- entries[!fs::path_file(entries) %in% c(".git", ".hg", ".svn")]
@@ -569,10 +591,7 @@ add_links <- function(
   document_path <- path
 
   # Prioritize configuration specified in language-specific profiles
-  q_inspect <- quarto::quarto_inspect(
-    input = project_dir,
-    profile = c(language_code, profile)
-  )
+  q_inspect <- quarto_inspect_cached(project_dir, language_code, profile)
   lang_config <- q_inspect$config
   config <- utils::modifyList(config, lang_config)
 
