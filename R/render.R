@@ -69,6 +69,40 @@ render_website <- function(
   )
 }
 
+# Copy the project into the temporary render directory, excluding VCS
+# directories. CI checkouts carry a full-history .git (potentially many
+# GB); copying it into the temp dir and unlinking it again afterwards
+# dominated render time with silent disk I/O.
+copy_project <- function(path, temporary_directory) {
+  entries <- fs::dir_ls(path, all = TRUE)
+  entries <- entries[!fs::path_file(entries) %in% c(".git", ".hg", ".svn")]
+  target_root <- file.path(temporary_directory, fs::path_file(path))
+  fs::dir_create(target_root)
+  for (entry in entries) {
+    target <- file.path(target_root, fs::path_file(entry))
+    if (fs::is_dir(entry)) {
+      fs::dir_copy(entry, target)
+    } else {
+      fs::file_copy(entry, target)
+    }
+  }
+  invisible(temporary_directory)
+}
+
+# On non-interactive sessions (CI), skip the recursive unlink of the
+# (GB-sized) temp copy: runners are discarded after the job, so leaving
+# the temp directory behind costs nothing and saves minutes of silent
+# deletion at the end of the render. Interactive sessions keep withr's
+# automatic cleanup.
+bq_tempdir <- function() {
+  if (rlang::is_interactive()) {
+    return(withr::local_tempdir())
+  }
+  dir <- tempfile(pattern = "babelquarto-")
+  fs::dir_create(dir)
+  dir
+}
+
 render <- function(
   path = ".",
   site_url = NULL,
@@ -113,9 +147,9 @@ render <- function(
   }
 
   # render project ----
-  temporary_directory <- withr::local_tempdir()
+  temporary_directory <- bq_tempdir()
   profile <- profile %||% Sys.getenv("QUARTO_PROFILE") # ensures default profile = "",  not NULL
-  fs::dir_copy(path, temporary_directory)
+  copy_project(path, temporary_directory)
   withr::with_dir(file.path(temporary_directory, fs::path_file(path)), {
     fs::file_delete(fs::dir_ls(
       regexp = "\\...\\.qmd|\\...\\.Rmd|\\...\\.ipynb",
@@ -269,8 +303,8 @@ render_quarto_lang <- function(
   site_url,
   profile # Empty string if no profile supplied
 ) {
-  temporary_directory <- withr::local_tempdir()
-  fs::dir_copy(path, temporary_directory)
+  temporary_directory <- bq_tempdir()
+  copy_project(path, temporary_directory)
   project_name <- fs::path_file(path)
   proj_path <- fs::path(temporary_directory, project_name)
 
